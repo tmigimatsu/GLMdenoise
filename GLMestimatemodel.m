@@ -577,11 +577,82 @@ if ~(mode==2 || mode==3)
   % calculate overall R^2 [beware: MEMORY]
   results.R2 = reshape(calccodcell(modelfit,data,1)',[xyzsize 1]);  % notice that we use 'data' not 'data2'
 
+  % calculate overall R^2 for signal responses to experiment conditions
+  results.R2exp = reshape(calccodcellexp(modelfit,data,1)',[xyzsize 1]);
+  
   % calculate R^2 on a per-run basis [beware: MEMORY]
   results.R2run = catcell(dimdata+1,cellfun(@(x,y) reshape(calccod(x,y,1,0,0)',[xyzsize 1]),modelfit,data,'UniformOutput',0));
 
+  % calculate R^2 on a per-run per-voxel per-task basis
+  if mode==0
+      
+    switch hrfmodel
+    
+    % currently works with fir only
+    case 'fir'
+      [ntime, numconds] = size(design{1});
+      modelmdsq = squish(results.modelmd,3);
+      results.R2task = zeros(numruns, numvoxels, numconds);
+      % loop over all the runs
+      for p=1:1:numruns
+          
+        % create mask to block signals unrelated to tasks
+        mask = conv2(full(design{p}),ones(hrfknobs,1));
+        mask = mask(1:ntime,:);
+        mask(mask>1) = 1;
+        
+        % loop over all the voxels
+        for r=1:1:numvoxels
+          
+          % skip if data is 0
+          d = data{p}(:,r);
+          if ~any(d)
+              results.R2task(p,r,:) = nan(numconds,1);
+              continue
+          end
+          
+          % do not subtract mean from denominator (matches results.R2 and
+          % results.R2task)
+          dresid = d.^2;
+          % dresid = (d-nanmean(d)).^2;
+          
+          % loop over all the tasks
+          for q=1:1:numconds
+              
+            % create the predicted signal
+            fir_fit = squeeze(modelmdsq(r,q,:));
+            pred = conv(full(design{p}(:,q)),fir_fit,'same');
+            pred = pred(1:ntime);
+            
+            % compute R2
+            numer = nansum(((d-pred).^2) .* mask(:,q));
+            denom = nansum(dresid .* mask(:,q));
+            results.R2task(p,r,q) = 100*(1 - zerodiv(numer,denom,NaN,0));
+            
+          end
+          
+          %{
+          fir_fit = num2cell(squeeze(modelmdsq(r,:,:))', 1); % time x cond
+          design_cell = num2cell(full(design{p}), 1); % time x cond
+          pred = cellfun(@(x,y) conv(x,y),design_cell,fir_fit,'UniformOutput',0);
+          pred = cellfun(@(x) x(1:ntime),pred,'UniformOutput',0);
+          pred = cell2mat(pred); % time x cond
+          numer = nansum((bsxfun(@minus,d,pred).^2).*mask,1);
+          denom = nansum(bsxfun(@times,(d-nanmean(d)).^2,mask),1);
+          results.R2task(p,r,:) = 100*(1 - zerodiv(numer,denom,NaN,0)');
+          %}
+          
+        end
+        
+      end
+      
+    end
+    
+  end
+  
   % clear
   clear modelfit;  % big memory usage
+  clear modelmdsq;
 
   if ~opt.suppressoutput, fprintf('done.\n');, end
 
